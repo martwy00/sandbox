@@ -1,5 +1,6 @@
 use crate::element::{Element, Particle};
 use eframe::egui;
+use std::fs;
 
 pub struct World {
     pub width: usize,
@@ -32,6 +33,38 @@ impl World {
         } else {
             None
         }
+    }
+
+    pub fn save_to_file(&self, path: &str) -> std::io::Result<()> {
+        let mut data = Vec::with_capacity(8 + self.cells.len() * 3);
+        data.extend_from_slice(&(self.width as u32).to_le_bytes());
+        data.extend_from_slice(&(self.height as u32).to_le_bytes());
+        for p in &self.cells {
+            data.push(p.kind as u8);
+            data.push(p.life);
+            data.push(p.shade);
+        }
+        fs::write(path, data)
+    }
+
+    pub fn load_from_file(&mut self, path: &str) -> std::io::Result<()> {
+        let data = fs::read(path)?;
+        if data.len() < 8 {
+            return Ok(());
+        }
+        let w = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let h = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        if w != self.width || h != self.height || data.len() < 8 + w * h * 3 {
+            return Ok(());
+        }
+        for (idx, chunk) in data[8..8 + w * h * 3].chunks_exact(3).enumerate() {
+            self.cells[idx] = Particle {
+                kind: Element::from_u8(chunk[0]),
+                life: chunk[1],
+                shade: chunk[2],
+            };
+        }
+        Ok(())
     }
 
     fn rand_u32(&mut self) -> u32 {
@@ -104,6 +137,9 @@ impl World {
                                 Element::Fire => 40 + (self.rand_u8() % 50),
                                 Element::Smoke => 80 + (self.rand_u8() % 90),
                                 Element::Steam => 140 + (self.rand_u8() % 100),
+                                Element::Methane => 220,
+                                Element::Spark => 18,
+                                Element::MoltenMetal => 255,
                                 Element::Acid => 4,
                                 _ => 0,
                             };
@@ -178,6 +214,10 @@ impl World {
                 match self.cells[i].kind {
                     Element::Empty | Element::Wall | Element::Wood | Element::Concrete => {}
                     Element::Metal => self.update_metal(x, y),
+                    Element::Copper => self.update_copper(x, y),
+                    Element::Battery => self.update_battery(x, y),
+                    Element::Spark => self.update_spark(x, y),
+                    Element::Clone => self.update_clone(x, y),
                     Element::Void => self.update_void(x, y),
                     Element::Glass => self.update_glass(x, y),
                     Element::Rubber => self.update_rubber(x, y),
@@ -191,19 +231,26 @@ impl World {
                     Element::Acid => self.update_acid(x, y),
                     Element::Nitro => self.update_nitro(x, y),
                     Element::Lava => self.update_lava(x, y),
+                    Element::MoltenMetal => self.update_molten_metal(x, y),
                     Element::Plant => self.update_plant(x, y),
                     Element::Ice => self.update_ice(x, y),
                     Element::Fire => self.update_fire(x, y),
                     Element::Smoke => self.update_smoke(x, y),
                     Element::Steam => self.update_steam(x, y),
+                    Element::Methane => self.update_methane(x, y),
                 }
             }
         }
     }
 
-    fn update_metal(&mut self, x: usize, y: usize) {
+    fn update_battery(&mut self, x: usize, y: usize) {
         let i = self.idx(x, y);
-        let mut temp = self.cells[i].life;
+        // Wysyła impuls elektryczny co ~35 klatek
+        if self.cells[i].life > 0 {
+            self.cells[i].life -= 1;
+            return;
+        }
+        self.cells[i].life = 35;
 
         let neighbors = [
             (x as isize - 1, y as isize),
@@ -218,18 +265,272 @@ impl World {
             }
             let ni = self.idx(nx as usize, ny as usize);
             match self.cells[ni].kind {
-                Element::Lava => {
-                    temp = temp.saturating_add(14);
+                Element::Copper => {
+                    if self.cells[ni].life == 0 {
+                        self.cells[ni].life = 18;
+                        self.updated[ni] = true;
+                    }
+                }
+                Element::Metal => {
+                    self.cells[ni].life = self.cells[ni].life.saturating_add(12);
+                }
+                Element::Water | Element::SaltWater => {
+                    if self.rand_u8() < 80 {
+                        self.cells[ni] = Particle {
+                            kind: Element::Spark,
+                            life: 14,
+                            shade: 0,
+                        };
+                        self.updated[ni] = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn update_copper(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        let charge = self.cells[i].life;
+
+        if charge > 0 {
+            // Świeży impuls (16..=18) przekazuje napięcie dalej tylko do rozładowanych sąsiadów
+            if charge >= 16 {
+                let neighbors = [
+                    (x as isize - 1, y as isize),
+                    (x as isize + 1, y as isize),
+                    (x as isize, y as isize - 1),
+                    (x as isize, y as isize + 1),
+                ];
+
+                for (nx, ny) in neighbors {
+                    if !self.in_bounds(nx, ny) {
+                        continue;
+                    }
+                    let ni = self.idx(nx as usize, ny as usize);
+                    match self.cells[ni].kind {
+                        Element::Copper => {
+                            if self.cells[ni].life == 0 {
+                                self.cells[ni].life = 18;
+                                self.updated[ni] = true;
+                            }
+                        }
+                        Element::Metal => {
+                            // Prąd przepływający z miedzi do metalu rozgrzewa go (grzałka)
+                            self.cells[ni].life = self.cells[ni].life.saturating_add(18);
+                        }
+                        Element::Gunpowder => {
+                            self.explode(nx as usize, ny as usize, 14, 0, false);
+                        }
+                        Element::Tnt => {
+                            self.cells[ni] = Particle::empty();
+                            self.explode(nx as usize, ny as usize, 26, 0, true);
+                        }
+                        Element::Nitro => {
+                            self.cells[ni] = Particle::empty();
+                            self.explode(nx as usize, ny as usize, 22, 0, true);
+                        }
+                        Element::Fuse | Element::Methane => {
+                            self.cells[ni] = Particle {
+                                kind: Element::Fire,
+                                life: 45,
+                                shade: self.rand_u8() % 30,
+                            };
+                            self.updated[ni] = true;
+                        }
+                        Element::Water | Element::SaltWater => {
+                            if self.rand_u8() < 90 {
+                                self.cells[ni] = Particle {
+                                    kind: Element::Spark,
+                                    life: 12,
+                                    shade: 0,
+                                };
+                                self.updated[ni] = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            self.cells[i].life -= 1;
+        }
+    }
+
+    fn update_spark(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        if self.cells[i].life == 0 {
+            self.cells[i] = Particle::empty();
+            return;
+        }
+        self.cells[i].life -= 1;
+
+        let neighbors = [
+            (x as isize - 1, y as isize),
+            (x as isize + 1, y as isize),
+            (x as isize, y as isize - 1),
+            (x as isize, y as isize + 1),
+        ];
+
+        for (nx, ny) in neighbors {
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let ni = self.idx(nx as usize, ny as usize);
+            match self.cells[ni].kind {
+                Element::Copper => {
+                    if self.cells[ni].life == 0 {
+                        self.cells[ni].life = 18;
+                        self.updated[ni] = true;
+                    }
+                }
+                Element::Metal => {
+                    self.cells[ni].life = self.cells[ni].life.saturating_add(15);
+                }
+                Element::Water | Element::SaltWater => {
+                    if self.rand_u8() < 70 {
+                        self.cells[ni] = Particle {
+                            kind: Element::Spark,
+                            life: self.cells[i].life.saturating_sub(2),
+                            shade: 0,
+                        };
+                        self.updated[ni] = true;
+                    }
+                }
+                Element::Gunpowder => {
+                    self.explode(nx as usize, ny as usize, 14, 0, false);
+                }
+                Element::Tnt => {
+                    self.cells[ni] = Particle::empty();
+                    self.explode(nx as usize, ny as usize, 26, 0, true);
+                }
+                Element::Nitro => {
+                    self.cells[ni] = Particle::empty();
+                    self.explode(nx as usize, ny as usize, 22, 0, true);
+                }
+                Element::Methane | Element::Fuse | Element::Oil => {
+                    self.cells[ni] = Particle {
+                        kind: Element::Fire,
+                        life: 55,
+                        shade: self.rand_u8() % 30,
+                    };
+                    self.updated[ni] = true;
+                }
+                _ => {}
+            }
+        }
+
+        let dx = (self.rand_u8() % 3) as isize - 1;
+        let dy = (self.rand_u8() % 3) as isize - 1;
+        if self.is_empty(x as isize + dx, y as isize + dy) {
+            self.swap(x, y, (x as isize + dx) as usize, (y as isize + dy) as usize);
+        }
+    }
+
+    fn update_clone(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        let stored = Element::from_u8(self.cells[i].life);
+
+        let neighbors = [
+            (x as isize - 1, y as isize),
+            (x as isize + 1, y as isize),
+            (x as isize, y as isize - 1),
+            (x as isize, y as isize + 1),
+        ];
+
+        if stored == Element::Empty {
+            // Zapamiętaj pierwszy materiał, jaki dotknie Clone
+            for (nx, ny) in neighbors {
+                if !self.in_bounds(nx, ny) {
+                    continue;
+                }
+                let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
+                if !matches!(
+                    nkind,
+                    Element::Empty | Element::Clone | Element::Void | Element::Wall
+                ) {
+                    self.cells[i].life = nkind as u8;
+                    return;
+                }
+            }
+        } else {
+            // Generuj zapamiętany materiał w pustych polach obok
+            for (nx, ny) in neighbors {
+                if !self.in_bounds(nx, ny) {
+                    continue;
+                }
+                let ni = self.idx(nx as usize, ny as usize);
+                if self.cells[ni].kind == Element::Empty && self.rand_u8() < 30 {
+                    let life = match stored {
+                        Element::Fire => 50,
+                        Element::Smoke => 90,
+                        Element::Steam => 150,
+                        Element::Methane => 220,
+                        Element::Spark => 18,
+                        Element::MoltenMetal => 255,
+                        Element::Acid => 4,
+                        _ => 0,
+                    };
+                    self.cells[ni] = Particle {
+                        kind: stored,
+                        life,
+                        shade: self.rand_u8() % 30,
+                    };
+                    self.updated[ni] = true;
+                }
+            }
+        }
+    }
+
+    fn update_metal(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        let mut temp = self.cells[i].life;
+
+        // Topnienie metalu po osiągnięciu maksymalnej temperatury (1500 °C)
+        if temp == 255 && self.rand_u8() < 15 {
+            self.cells[i] = Particle {
+                kind: Element::MoltenMetal,
+                life: 255,
+                shade: self.rand_u8() % 25,
+            };
+            return;
+        }
+
+        let neighbors = [
+            (x as isize - 1, y as isize),
+            (x as isize + 1, y as isize),
+            (x as isize, y as isize - 1),
+            (x as isize, y as isize + 1),
+        ];
+
+        for (nx, ny) in neighbors {
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let ni = self.idx(nx as usize, ny as usize);
+            match self.cells[ni].kind {
+                Element::Lava | Element::MoltenMetal => {
+                    temp = temp.saturating_add(16);
                 }
                 Element::Fire => {
                     temp = temp.saturating_add(7);
                 }
-               Element::Metal => {
+                Element::Metal => {
                     let n_temp = self.cells[ni].life;
                     if n_temp > temp.saturating_add(1) {
                         let transfer = ((n_temp - temp) / 3).max(1);
                         temp = temp.saturating_add(transfer);
                         self.cells[ni].life = n_temp.saturating_sub(transfer);
+                    }
+                }
+                Element::Sand => {
+                    // Piasek obok białego żaru przetapia się w szkło
+                    if temp > 210 && self.rand_u8() < 15 {
+                        self.cells[ni] = Particle {
+                            kind: Element::Glass,
+                            life: 0,
+                            shade: self.rand_u8() % 25,
+                        };
+                        self.updated[ni] = true;
                     }
                 }
                 Element::Water => {
@@ -265,7 +566,7 @@ impl World {
                         self.updated[ni] = true;
                     }
                 }
-                Element::Wood | Element::Plant | Element::Fuse | Element::Rubber => {
+                Element::Wood | Element::Plant | Element::Fuse | Element::Rubber | Element::Methane => {
                     if temp > 130 && self.rand_u8() < 35 {
                         self.cells[ni] = Particle {
                             kind: Element::Fire,
@@ -303,6 +604,80 @@ impl World {
         self.cells[i].life = temp;
     }
 
+    fn update_molten_metal(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        let mut heat_source = false;
+
+        let neighbors = [
+            (x as isize - 1, y as isize),
+            (x as isize + 1, y as isize),
+            (x as isize, y as isize - 1),
+            (x as isize, y as isize + 1),
+        ];
+
+        for (nx, ny) in neighbors {
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let ni = self.idx(nx as usize, ny as usize);
+            match self.cells[ni].kind {
+                Element::Lava | Element::Fire => {
+                    heat_source = true;
+                }
+                Element::Water => {
+                    // Hartowanie w wodzie natychmiast zastyga roztopiony metal
+                    self.cells[i] = Particle {
+                        kind: Element::Metal,
+                        life: 160,
+                        shade: self.rand_u8() % 30,
+                    };
+                    self.cells[ni] = Particle {
+                        kind: Element::Steam,
+                        life: 150,
+                        shade: 20,
+                    };
+                    self.updated[ni] = true;
+                    return;
+                }
+                Element::Sand => {
+                    if self.rand_u8() < 20 {
+                        self.cells[ni] = Particle {
+                            kind: Element::Glass,
+                            life: 0,
+                            shade: self.rand_u8() % 25,
+                        };
+                        self.updated[ni] = true;
+                    }
+                }
+                Element::Wood | Element::Plant | Element::Fuse | Element::Methane => {
+                    self.cells[ni] = Particle {
+                        kind: Element::Fire,
+                        life: 60,
+                        shade: self.rand_u8() % 30,
+                    };
+                    self.updated[ni] = true;
+                }
+                _ => {}
+            }
+        }
+
+        if !heat_source && self.rand_u8() < 22 {
+            if self.cells[i].life <= 185 {
+                // Zastyga w stały rozgrzany metal
+                self.cells[i] = Particle {
+                    kind: Element::Metal,
+                    life: 185,
+                    shade: self.rand_u8() % 30,
+                };
+                return;
+            } else {
+                self.cells[i].life -= 1;
+            }
+        }
+
+        self.update_liquid(x, y, 2);
+    }
+
     fn update_glass(&mut self, x: usize, y: usize) {
         let i = self.idx(x, y);
         let neighbors = [
@@ -317,7 +692,6 @@ impl World {
                 continue;
             }
             let ni = self.idx(nx as usize, ny as usize);
-            // Szkło pęka i topi się przy bezpośrednim kontakcie z lawą
             if self.cells[ni].kind == Element::Lava && self.rand_u8() < 12 {
                 self.cells[i] = Particle::empty();
                 return;
@@ -364,7 +738,6 @@ impl World {
                 continue;
             }
             let ni = self.idx(nx as usize, ny as usize);
-            // Kamień przy długim kontakcie z lawą topi się w lawę
             if self.cells[ni].kind == Element::Lava && self.rand_u8() < 3 {
                 self.cells[i] = Particle {
                     kind: Element::Lava,
@@ -390,7 +763,6 @@ impl World {
                 continue;
             }
             let ni = self.idx(nx as usize, ny as usize);
-            // Glina pod wpływem ognia lub lawy wypala się w twardy kamień
             if matches!(self.cells[ni].kind, Element::Fire | Element::Lava) && self.rand_u8() < 25 {
                 self.cells[i] = Particle {
                     kind: Element::Stone,
@@ -437,7 +809,7 @@ impl World {
             for (nx, ny) in neighbors {
                 if self.in_bounds(nx, ny) {
                     let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
-                    if nkind == Element::Fire || nkind == Element::Lava {
+                    if matches!(nkind, Element::Fire | Element::Lava | Element::Spark) {
                         self.explode(x, y, 14, 0, false);
                         return;
                     }
@@ -501,7 +873,10 @@ impl World {
         for (nx, ny) in neighbors {
             if self.in_bounds(nx, ny) {
                 let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
-                if matches!(nkind, Element::Fire | Element::Lava | Element::Acid) {
+                if matches!(
+                    nkind,
+                    Element::Fire | Element::Lava | Element::Acid | Element::Spark
+                ) {
                     let i = self.idx(x, y);
                     self.cells[i] = Particle::empty();
                     self.explode(x, y, 26, 0, true);
@@ -522,7 +897,9 @@ impl World {
         for (nx, ny) in neighbors {
             if self.in_bounds(nx, ny) {
                 let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
-                if (nkind == Element::Fire || nkind == Element::Lava) && self.rand_u8() < 75 {
+                if matches!(nkind, Element::Fire | Element::Lava | Element::Spark)
+                    && self.rand_u8() < 75
+                {
                     let i = self.idx(x, y);
                     self.cells[i] = Particle {
                         kind: Element::Fire,
@@ -579,7 +956,7 @@ impl World {
         for (nx, ny) in neighbors {
             if self.in_bounds(nx, ny) {
                 let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
-                if nkind == Element::Fire || nkind == Element::Lava {
+                if matches!(nkind, Element::Fire | Element::Lava | Element::Spark) {
                     let i = self.idx(x, y);
                     self.cells[i] = Particle {
                         kind: Element::Fire,
@@ -606,7 +983,10 @@ impl World {
         for (nx, ny) in neighbors {
             if self.in_bounds(nx, ny) {
                 let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
-                if matches!(nkind, Element::Fire | Element::Lava | Element::Acid) {
+                if matches!(
+                    nkind,
+                    Element::Fire | Element::Lava | Element::Acid | Element::Spark
+                ) {
                     let i = self.idx(x, y);
                     self.cells[i] = Particle::empty();
                     self.explode(x, y, 22, 0, true);
@@ -634,11 +1014,11 @@ impl World {
             let ni = self.idx(nx as usize, ny as usize);
             let nkind = self.cells[ni].kind;
 
-            // Szkło (Glass) i guma (Rubber) są odporne na kwas
             let dissolvable = matches!(
                 nkind,
                 Element::Wall
                     | Element::Metal
+                    | Element::Copper
                     | Element::Wood
                     | Element::Plant
                     | Element::Sand
@@ -715,7 +1095,18 @@ impl World {
                     self.updated[ni] = true;
                     return;
                 }
-                Element::Wood | Element::Plant | Element::Fuse | Element::Rubber => {
+                Element::Sand => {
+                    // Piasek w kontakcie z lawą topi się w szkło
+                    if self.rand_u8() < 25 {
+                        self.cells[ni] = Particle {
+                            kind: Element::Glass,
+                            life: 0,
+                            shade: self.rand_u8() % 25,
+                        };
+                        self.updated[ni] = true;
+                    }
+                }
+                Element::Wood | Element::Plant | Element::Fuse | Element::Rubber | Element::Methane => {
                     if self.rand_u8() < 45 {
                         self.cells[ni] = Particle {
                             kind: Element::Fire,
@@ -791,7 +1182,7 @@ impl World {
             }
             let ni = self.idx(nx as usize, ny as usize);
             match self.cells[ni].kind {
-                Element::Fire | Element::Lava => {
+                Element::Fire | Element::Lava | Element::MoltenMetal => {
                     self.cells[i] = Particle {
                         kind: Element::Water,
                         life: 0,
@@ -885,6 +1276,10 @@ impl World {
                         self.updated[ni] = true;
                     }
                 }
+                Element::Methane => {
+                    self.explode(nx as usize, ny as usize, 9, 0, false);
+                    return;
+                }
                 _ => {}
             }
         }
@@ -938,6 +1333,41 @@ impl World {
         }
     }
 
+    fn update_methane(&mut self, x: usize, y: usize) {
+        let neighbors = [
+            (x as isize - 1, y as isize),
+            (x as isize + 1, y as isize),
+            (x as isize, y as isize - 1),
+            (x as isize, y as isize + 1),
+        ];
+
+        for (nx, ny) in neighbors {
+            if !self.in_bounds(nx, ny) {
+                continue;
+            }
+            let nkind = self.cells[self.idx(nx as usize, ny as usize)].kind;
+            if matches!(
+                nkind,
+                Element::Fire | Element::Lava | Element::Spark | Element::MoltenMetal
+            ) {
+                self.explode(x, y, 9, 0, false);
+                return;
+            }
+        }
+
+        // Lżejszy od powietrza — gromadzi się pod sufitami i rozchodzi na boki
+        let dir: isize = if self.rand_bool() { -1 } else { 1 };
+        let ny = y as isize - 1;
+
+        if self.is_empty(x as isize, ny) {
+            self.swap(x, y, x, ny as usize);
+        } else if self.is_empty(x as isize + dir, ny) {
+            self.swap(x, y, (x as isize + dir) as usize, ny as usize);
+        } else if self.is_empty(x as isize + dir, y as isize) {
+            self.swap(x, y, (x as isize + dir) as usize, y);
+        }
+    }
+
     fn explode(&mut self, cx: usize, cy: usize, radius: isize, depth: u8, destroy_walls: bool) {
         let r_sq = radius * radius;
         let inner_r_sq = (radius - 3).max(1) * (radius - 3).max(1);
@@ -968,6 +1398,8 @@ impl World {
                         | Element::Concrete
                         | Element::Stone
                         | Element::Rubber
+                        | Element::Clone
+                        | Element::Battery
                 );
 
                 if (blast_resistant && !destroy_walls) || kind == Element::Void {
@@ -997,6 +1429,12 @@ impl World {
                     continue;
                 }
 
+                if kind == Element::Methane && depth < 3 {
+                    self.cells[i] = Particle::empty();
+                    self.explode(nx as usize, ny as usize, 8, depth + 1, false);
+                    continue;
+                }
+
                 if self.rand_u8() < 180 {
                     self.cells[i] = Particle {
                         kind: Element::Fire,
@@ -1015,8 +1453,12 @@ impl World {
         }
     }
 
-    pub fn to_color_image(&self, bg: egui::Color32) -> egui::ColorImage {
-        let pixels: Vec<egui::Color32> = self.cells.iter().map(|p| p.color(bg)).collect();
+    pub fn to_color_image(&self, bg: egui::Color32, thermal: bool) -> egui::ColorImage {
+        let pixels: Vec<egui::Color32> = if thermal {
+            self.cells.iter().map(|p| p.thermal_color(bg)).collect()
+        } else {
+            self.cells.iter().map(|p| p.color(bg)).collect()
+        };
         egui::ColorImage::new([self.width, self.height], pixels)
     }
 }

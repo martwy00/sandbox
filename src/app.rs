@@ -12,6 +12,7 @@ pub struct SandboxApp {
     pub(crate) selected: Element,
     pub(crate) brush_radius: isize,
     pub(crate) paused: bool,
+    pub(crate) thermal_view: bool,
     pub(crate) bg_color: egui::Color32,
     pub(crate) temp_unit: TempUnit,
     pub(crate) line_start: Option<(usize, usize)>,
@@ -37,6 +38,7 @@ impl SandboxApp {
             selected: Element::Sand,
             brush_radius: 5,
             paused: false,
+            thermal_view: false,
             bg_color: egui::Color32::from_rgb(15, 15, 20),
             temp_unit: TempUnit::Celsius,
             line_start: None,
@@ -54,8 +56,26 @@ impl SandboxApp {
                 self.paused = !self.paused;
             }
 
+            if self.paused
+                && (i.key_pressed(egui::Key::Period) || i.key_pressed(egui::Key::ArrowRight))
+            {
+                self.world.step();
+            }
+
             if i.key_pressed(egui::Key::C) && !i.modifiers.ctrl && !i.modifiers.alt {
                 self.world.clear();
+            }
+
+            if i.key_pressed(egui::Key::T) && !i.modifiers.ctrl && !i.modifiers.alt {
+                self.thermal_view = !self.thermal_view;
+            }
+
+            if i.key_pressed(egui::Key::F5) {
+                let _ = self.world.save_to_file("quicksave.bin");
+            }
+
+            if i.key_pressed(egui::Key::F9) {
+                let _ = self.world.load_from_file("quicksave.bin");
             }
         });
     }
@@ -93,9 +113,19 @@ impl SandboxApp {
                 self.camera
                     .zoom_towards(smooth_scroll_y, response.hover_pos(), rect);
             }
+
+            if ui.input(|i| i.key_pressed(egui::Key::I)) && !ui.ctx().egui_wants_keyboard_input() {
+                if let Some(pos) = response.hover_pos() {
+                    let (gx, gy) =
+                        self.camera
+                            .screen_to_grid(pos, rect, self.world.width, self.world.height);
+                    if let Some(p) = self.world.get_particle(gx, gy) {
+                        self.selected = p.kind;
+                    }
+                }
+            }
         }
 
-        // Pan with right or middle mouse button
         if response.dragged_by(egui::PointerButton::Secondary)
             || response.dragged_by(egui::PointerButton::Middle)
         {
@@ -103,10 +133,23 @@ impl SandboxApp {
             self.camera.pan(delta, rect);
         }
 
+        let alt_held = ui.input(|i| i.modifiers.alt);
         let shift_held = ui.input(|i| i.modifiers.shift);
         let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
         let primary_down = ui.input(|i| i.pointer.primary_down());
         let primary_released = ui.input(|i| i.pointer.primary_released());
+
+        if alt_held && primary_down {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let (gx, gy) =
+                    self.camera
+                        .screen_to_grid(pos, rect, self.world.width, self.world.height);
+                if let Some(p) = self.world.get_particle(gx, gy) {
+                    self.selected = p.kind;
+                }
+            }
+            return;
+        }
 
         if primary_pressed && shift_held {
             if let Some(pos) = response.interact_pointer_pos() {

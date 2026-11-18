@@ -10,30 +10,43 @@ pub fn draw(app: &mut SandboxApp, ui: &mut egui::Ui) {
 fn draw_toolbar(app: &mut SandboxApp, ui: &mut egui::Ui) {
     egui::Panel::top("toolbar").show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
+            // Sypkie i wybuchowe
             ui.selectable_value(&mut app.selected, Element::Sand, "Sand");
             ui.selectable_value(&mut app.selected, Element::Gunpowder, "Gunpowder");
             ui.selectable_value(&mut app.selected, Element::Salt, "Salt");
             ui.selectable_value(&mut app.selected, Element::Tnt, "TNT");
             ui.selectable_value(&mut app.selected, Element::Fuse, "Fuse");
+
+            // Ciecze
             ui.selectable_value(&mut app.selected, Element::Water, "Water");
             ui.selectable_value(&mut app.selected, Element::SaltWater, "SaltWater");
             ui.selectable_value(&mut app.selected, Element::Oil, "Oil");
             ui.selectable_value(&mut app.selected, Element::Acid, "Acid");
             ui.selectable_value(&mut app.selected, Element::Nitro, "Nitro");
             ui.selectable_value(&mut app.selected, Element::Lava, "Lava");
+            ui.selectable_value(&mut app.selected, Element::MoltenMetal, "MoltenMetal");
+
+            // Gazy, ogień i elektryczność
+            ui.selectable_value(&mut app.selected, Element::Fire, "Fire");
+            ui.selectable_value(&mut app.selected, Element::Steam, "Steam");
+            ui.selectable_value(&mut app.selected, Element::Methane, "Methane");
+            ui.selectable_value(&mut app.selected, Element::Spark, "Spark");
+            ui.selectable_value(&mut app.selected, Element::Copper, "Copper");
+            ui.selectable_value(&mut app.selected, Element::Battery, "Battery");
+
+            // Stałe i specjalne
+            ui.selectable_value(&mut app.selected, Element::Metal, "Metal");
             ui.selectable_value(&mut app.selected, Element::Wood, "Wood");
             ui.selectable_value(&mut app.selected, Element::Plant, "Plant");
             ui.selectable_value(&mut app.selected, Element::Ice, "Ice");
-            ui.selectable_value(&mut app.selected, Element::Fire, "Fire");
-            ui.selectable_value(&mut app.selected, Element::Steam, "Steam");
-            ui.selectable_value(&mut app.selected, Element::Metal, "Metal");
-            ui.selectable_value(&mut app.selected, Element::Wall, "Wall");
-            ui.selectable_value(&mut app.selected, Element::Void, "Void");
             ui.selectable_value(&mut app.selected, Element::Concrete, "Concrete");
             ui.selectable_value(&mut app.selected, Element::Glass, "Glass");
             ui.selectable_value(&mut app.selected, Element::Rubber, "Rubber");
             ui.selectable_value(&mut app.selected, Element::Stone, "Stone");
             ui.selectable_value(&mut app.selected, Element::Clay, "Clay");
+            ui.selectable_value(&mut app.selected, Element::Wall, "Wall");
+            ui.selectable_value(&mut app.selected, Element::Clone, "Clone");
+            ui.selectable_value(&mut app.selected, Element::Void, "Void");
             ui.selectable_value(&mut app.selected, Element::Empty, "Eraser");
 
             ui.separator();
@@ -48,6 +61,7 @@ fn draw_toolbar(app: &mut SandboxApp, ui: &mut egui::Ui) {
             ui.label("Unit:");
             ui.selectable_value(&mut app.temp_unit, TempUnit::Celsius, "°C");
             ui.selectable_value(&mut app.temp_unit, TempUnit::Fahrenheit, "°F");
+            ui.toggle_value(&mut app.thermal_view, "🌡 Thermal");
 
             ui.separator();
             if ui
@@ -62,8 +76,19 @@ fn draw_toolbar(app: &mut SandboxApp, ui: &mut egui::Ui) {
             if ui.button(pause_label).clicked() {
                 app.paused = !app.paused;
             }
+            if app.paused && ui.button("⏭ Step").clicked() {
+                app.world.step();
+            }
             if ui.button("🗑 Clear").clicked() {
                 app.world.clear();
+            }
+
+            ui.separator();
+            if ui.button("💾 Save").clicked() {
+                let _ = app.world.save_to_file("quicksave.bin");
+            }
+            if ui.button("📂 Load").clicked() {
+                let _ = app.world.load_from_file("quicksave.bin");
             }
 
             ui.separator();
@@ -76,7 +101,7 @@ fn draw_viewport(app: &mut SandboxApp, ui: &mut egui::Ui) {
     egui::CentralPanel::default().show(ui, |ui| {
         let texture = ui.ctx().load_texture(
             "sandbox_world",
-            app.world.to_color_image(app.bg_color),
+            app.world.to_color_image(app.bg_color, app.thermal_view),
             egui::TextureOptions::NEAREST,
         );
 
@@ -122,7 +147,6 @@ fn draw_viewport(app: &mut SandboxApp, ui: &mut egui::Ui) {
         if let Some(hover_pos) = response.hover_pos() {
             ui.painter().circle_stroke(hover_pos, screen_radius, stroke);
 
-            // Odczyt temperatury nagrzanego materiału pod kursorem
             let (gx, gy) = app.camera.screen_to_grid(
                 hover_pos,
                 response.rect,
@@ -131,19 +155,32 @@ fn draw_viewport(app: &mut SandboxApp, ui: &mut egui::Ui) {
             );
 
             if let Some(particle) = app.world.get_particle(gx, gy) {
-                if let Some(temp_c) = particle.temperature_c() {
-                    let label = format!(
-                        "{}: {}",
-                        particle.kind.name(),
-                        app.temp_unit.format(temp_c)
-                    );
+                if particle.kind != Element::Empty {
+                    let label = if let Some(temp_c) = particle.temperature_c() {
+                        format!(
+                            "{}: {} ({}, {})",
+                            particle.kind.name(),
+                            app.temp_unit.format(temp_c),
+                            gx,
+                            gy
+                        )
+                    } else if particle.kind == Element::Clone && particle.life > 0 {
+                        format!(
+                            "Clone [{}] ({}, {})",
+                            Element::from_u8(particle.life).name(),
+                            gx,
+                            gy
+                        )
+                    } else {
+                        format!("{} ({}, {})", particle.kind.name(), gx, gy)
+                    };
+
                     let galley = ui.painter().layout_no_wrap(
                         label,
                         egui::FontId::monospace(13.0),
                         egui::Color32::WHITE,
                     );
 
-                    // Ustawiamy etykietę tuż pod kursorem i pilnujemy, by nie wyszła poza ekran
                     let desired_pos = hover_pos + egui::vec2(12.0, screen_radius + 8.0);
                     let max_x = (response.rect.right() - galley.size().x - 8.0)
                         .max(response.rect.left() + 4.0);
