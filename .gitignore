@@ -1,1 +1,10 @@
-/target
+/target/
+
+build_errors.txt
+*.log
+**/*.rs.bk
+
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
