@@ -1,0 +1,76 @@
+﻿cargo :    Compiling sandbox v0.1.0 (D:\Projekty\sandbox)
+At line:2 char:1
++ cargo build --release 2>&1 | Out-File 'build_errors.txt' -Encoding UT ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling sa...ojekty\sandbox):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+warning: unused variable: `i`
+   --> src\world.rs:423:13
+    |
+423 |         let i = self.idx(x, y);
+    |             ^ help: if this is intentional, prefix it with an underscore: `_i`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: variants `Concrete`, `Glass`, `Rubber`, `Stone`, and `Clay` are never constructed
+  --> src\element.rs:42:5
+   |
+19 | pub enum Element {
+   |          ------- variants in this enum
+...
+42 |     Concrete,
+   |     ^^^^^^^^
+43 |     Glass,
+   |     ^^^^^
+44 |     Rubber,
+   |     ^^^^^^
+45 |     Stone,
+   |     ^^^^^
+46 |     Clay,
+   |     ^^^^
+   |
+   = note: `Element` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analy
+sis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused return value of `std::mem::replace` that must be used
+   --> src\world.rs:330:33
+    |
+330 | ...                   std::mem::replace(&mut self.cells[cell_idx], Particle::empty());
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if you don't need the old value, you can just assign the new value directly
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+330 |                                 let _ = std::mem::replace(&mut self.cells[cell_idx], Particle::empty());
+    |                                 +++++++
+
+warning: unused return value of `std::mem::replace` that must be used
+   --> src\world.rs:378:33
+    |
+378 | ...                   std::mem::replace(&mut self.cells[cell_idx], Particle::empty());
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if you don't need the old value, you can just assign the new value directly
+help: use `let _ = ...` to ignore the resulting value
+    |
+378 |                                 let _ = std::mem::replace(&mut self.cells[cell_idx], Particle::empty());
+    |                                 +++++++
+
+warning: unused return value of `std::mem::replace` that must be used
+   --> src\world.rs:442:33
+    |
+442 | ...                   std::mem::replace(&mut self.cells[cell_idx], Particle::empty());
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if you don't need the old value, you can just assign the new value directly
+help: use `let _ = ...` to ignore the resulting value
+    |
+442 |                                 let _ = std::mem::replace(&mut self.cells[cell_idx], Particle::empty());
+    |                                 +++++++
+
+warning: `sandbox` (bin "sandbox") generated 5 warnings (run `cargo fix --bin "sandbox" -p sandbox` to apply 1 suggesti
+on)
+    Finished `release` profile [optimized] target(s) in 1.73s
